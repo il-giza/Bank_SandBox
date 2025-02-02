@@ -9,7 +9,7 @@ class World():
         законы макроэкономики, ограничения регуляторов/ЦБ и остальное окружение.
         Так же здесь описывается поведение клиента, которое может зависеть от внешних факторов.
 
-        dod_migration - матрица вероятностей переходов по просрочкам
+        dod_migration - матрицы вероятностей переходов по просрочкам (AVG-средняя, 0-контракты good, 1-контракты bad)
     """
 
     def __init__(self, seed = 0):
@@ -17,19 +17,41 @@ class World():
         self.Time = 0
         self.Population_Mu = 0
         self.Population_Sigma = 1
-        self.Fate_cutoff = 0.3
-        #                             0    1+   31+   61+   91+   WOF
-        self.dod_migration = np.array([[0.95, 0.05, 0.00, 0.00, 0.00, 0.00], #  0 
-                                       [0.90, 0.05, 0.05, 0.00, 0.00, 0.00], #  1+
-                                       [0.10, 0.05, 0.05, 0.80, 0.00, 0.00], # 31+
-                                       [0.05, 0.05, 0.05, 0.05, 0.80, 0.00], # 61+
-                                       [0.01, 0.01, 0.02, 0.02, 0.04, 0.90], # 91+
-                                       [0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # WOF
-            #                          [0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # TODO - добавить досрочное и частичнодочсрочное погашение кредита 
-                         ])
-        assert self.dod_migration.shape[0] == self.dod_migration.shape[1] # проверка на квадратность
-        assert [i.sum() for i in self.dod_migration] == [1 for i in range(len(self.dod_migration))] # 1 in sum of row
-        print('test - ', [i.sum() for i in self.dod_migration])
+        self.Fate_cutoff_pd = 0.3
+        self.Fate_cutoff_score = np.log(self.Fate_cutoff_pd/(1-self.Fate_cutoff_pd)) # пересчитаем pd в score
+        #                                  0    1+   31+   61+   91+   WOF
+        self.dod_migration = {'AVG': # средняя по портфелю
+                             np.array([[0.95, 0.05,    0,    0,    0,    0], #  0  (нет пропущенных платежей)
+                                       [0.90, 0.05, 0.05,    0,    0,    0], #  1+ (1 пропущенный платеж)
+                                       [0.10, 0.05, 0.05, 0.80,    0,    0], # 31+ (2 пропущенных платежа)
+                                       [0.05, 0.05, 0.05, 0.05, 0.80,    0], # 61+ (3 пропущенных платежа)
+                                       [0.01, 0.01, 0.02, 0.02, 0.04, 0.90], # 91+ (4 пропущенных платежа)
+                                       [   0,    0,    0,    0,    0,    1]  # WOF (списание контракт)
+                                      #[0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # TODO - добавить досрочное и частичнодочсрочное погашение кредита 
+                                      ]),
+                              0: # good - контракты, которые закрываются без списывания
+                             np.array([[0.97, 0.03,    0,    0,    0,    0], #  0  (нет пропущенных платежей)
+                                       [0.55, 0.32, 0.13,    0,    0,    0], #  1+ (1 пропущенный платеж)
+                                       [0.28, 0.17, 0.12, 0.43,    0,    0], # 31+ (2 пропущенных платежа)
+                                       [0.19, 0.06, 0.05, 0.11, 0.59,    0], # 61+ (3 пропущенных платежа)
+                                       [0.10, 0.02, 0.01, 0.01, 0.86,    0], # 91+ (4 пропущенных платежа)
+                                       [   0,    0,    0,    0,    0,    1]  # WOF (списание контракт)
+                                      #[0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # TODO - добавить досрочное и частичнодочсрочное погашение кредита 
+                                      ]),
+                              1: # bad - контракты, которые закрываются списанием
+                             np.array([[0.85, 0.15,    0,    0,    0,    0], #  0  (нет пропущенных платежей)
+                                       [0.19, 0.22, 0.59,    0,    0,    0], #  1+ (1 пропущенный платеж)
+                                       [0.04, 0.04, 0.05, 0.87,    0,    0], # 31+ (2 пропущенных платежа)
+                                       [0.01, 0.01, 0.01, 0.03, 0.94,    0], # 61+ (3 пропущенных платежа)
+                                       [0.01, 0.01, 0.01, 0.01, 0.93, 0.03], # 91+ (4 пропущенных платежа)
+                                       [   0,    0,    0,    0,    0,    1]  # WOF (списание контракт)
+                                      #[0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # TODO - добавить досрочное и частичнодочсрочное погашение кредита 
+                                      ])
+                             }
+        for k in self.dod_migration:
+            print('test(%s) - ' % k, [i.sum() for i in self.dod_migration[k]])
+            assert self.dod_migration[k].shape[0] == self.dod_migration[k].shape[1], 'проверка на квадратность - key=%s' % k
+            assert [i.sum() for i in self.dod_migration[k]] == [1 for i in range(len(self.dod_migration[k]))], '1 in sum of row - key=%s' % k
 
     def print_current_reality(self):
         print('Welcome to the real world')
@@ -46,9 +68,27 @@ class World():
         # предопределенная дефолтность - определяет исход контракта
         # 0 - контракт будет закрыт погашением
         # 1 - контракт будет закрыт списанием
-        fate  = [1 if scr > self.Fate_cutoff else 0 for scr in score]
+        fate  = [1 if scr > self.Fate_cutoff_score else 0 for scr in score]
         self.seed += 1
         return [score, fate]
+
+#============================================================================================================
+
+class Model():
+    """Class Model - рисковые модели
+    
+    """
+    def __init__(self, model_id=0, model_mu=0, model_sigma=1):
+        self.Model_Mu = model_mu
+        self.Model_Sigma = model_sigma
+        self.Model_id = model_id
+
+    def Score(self, factors):
+        model_diff = np.random.normal(self.Model_Mu, self.Model_Sigma, len(factors))
+#        print(model_diff)
+#        print(factors)
+        # Вернем смещенный скор
+        return factors + model_diff
 
 #============================================================================================================
 
@@ -105,8 +145,8 @@ class Bank_DS():
     # Создание модели.
     # Модель создается на выданных кредитах подбором значений зашумления предопределенного скора.
     # Здесь подбираются шум таким образом, чтобы качество (gini) модели соответствовало заданому значению.
-    def create_model(self, name, gini, portfolio, tto_period):
-        return None
+    def create_model(self, model_num, gini = None, portfolio = None, tto_period = None):
+        return Model(model_num)
 
 #============================================================================================================
 
@@ -128,7 +168,12 @@ class DWH_DB():
                                                   'AMOUNT',
                                                   'DURATION',
                                                   'IR',
-                                                  'TARIFF'
+                                                  'TARIFF',
+                                                  'MODEL_SCORE',
+                                                  'FATED_SCORE',
+                                                  'FATED_RESULT',
+                                                  'MODEL_ID',
+                                                  'NUM_IN_QUEUE',
                                                  ])
         
 #============================================================================================================
@@ -203,7 +248,13 @@ class Contract():
     dod_states = np.eye(dod_cnt) # матрица состояний (для удобства использована единичная матрица)
 
     def __init__(self, cntr_id = 0, issue_dt = 0, duration = 0,
-                 world = World, tariff = Tariff, amount = 100_000):
+                 world = World, tariff = Tariff, amount = 100_000,
+                 model_score = None,
+                 fated_score = None,
+                 fated_result = None,
+                 model_id = None,
+                 number_in_queue = None
+                ):
         self.cntr_id = cntr_id
         self.dod_id = 0        # начальное состояние контракта при выдачи: DOD = 0
         self.dod_state = self.dod_states[0] # np.array([1,0,0,0,0]) 
@@ -215,20 +266,29 @@ class Contract():
         self.wrtoff_id = 0       # 0 - контратк несписан, 1 - списан
         self.amount = amount
         self.tariff = tariff
-        
-    def next_month(self):
+        self.model_score = model_score
+        self.fated_score = fated_score
+        self.fated_result = fated_result
+        self.model_id = model_id
+        self.number_in_queue = number_in_queue
+        self.p = 0
+
+    def next_month(self, dod_migration_type=None):
         if self.closed_id == 1:
             return None
-           
+
+        if not dod_migration_type:
+            dod_migration_type = self.fated_result
+
         self.mob = self.mob + 1
-        p = self.dod_migration[self.dod_id]                    # array of probabilities
-        self.dod_id = np.random.choice(self.dod_cnt,1,p=p)[0]  # new state
+        self.p = self.dod_migration[dod_migration_type][self.dod_id]   # array of probabilities
+        self.dod_id = np.random.choice(self.dod_cnt, 1, p = self.p)[0]     # new state
         self.dod_state = self.dod_states[self.dod_id]
 
         if self.dod_id == 0 and self.mob >= self.duration: # погашение либо выздоровление с возвращением в график
             self.closed_id = 1
         
-        if self.dod_id == 5 and self.mob >= self.duration + 12: # списание
+        if self.wrtoff_id == 0 and self.dod_id == 5 and self.mob >= self.duration + 12: # списание
             self.wrtoff_id = 1
 
         if self.wrtoff_id == 1 and self.mob >= self.duration + 24: # закрытие списанного контракта
@@ -250,28 +310,58 @@ class Portfolio():
         self.portfolio_age = 0                          # возрвст портфеля
         self.world = world                              # настройки внешнего мира
         self.dwh = dwh                                  # база данных
+        self.number_in_queue = 0                        # номер клиента в очереди (для определения коэф. одобрения)
 
         # проведем первую выдачу - инициализация портфеля
 #        self.issue(N, duration)
         # Заполним LI
 #        self.fix_in_dwh()
 
-    def issue(self, issue_plan = [(Tariff,0)]):
-        for i in range(len(issue_plan)):
+    def issue(self, issue_plan = [(Tariff,0)], pd_cutoff = 0.1, model = None):
+        score_cutoff = np.log(pd_cutoff / (1 - pd_cutoff))
+        approved_list = []
+        N_flow = len(issue_plan)
+        i = 0
+
+        # Есть план, впускаем по плану и часть одобряем. Потом опять впускаем и одобряем, пока не одобрим плановое число (или больше).
+        while len(approved_list) < N_flow:
+            M_flow = N_flow * 10  # впускаем больше плана
+            score_list, res_list = self.world.get_god_score(M_flow)
+            model_score_list = model.Score(score_list)
+            approved_list.extend([(ms, fs, fr, i) for ms, fs, fr, i in zip(model_score_list,
+                                                                           score_list,res_list,
+                                                                           range(i*M_flow,(i+1)*M_flow)
+                                                                          ) if ms < score_cutoff])
+            i+=1
+#            print('--')
+#            print(len(approved_list))
+
+#        print('----')
+#        print(score_list)
+#        print(approved_list)
+
+        for (cntr_tariff, cntr_amount), (ms, fs, fr, i_queue) in zip(issue_plan,approved_list):
+#            print(cntr_tariff, cntr_amount, ms, fs, fr)
             self.cntr_id += 1
-            cntr_tariff = issue_plan[i][0]
-            cntr_amount = issue_plan[i][1]
             cntr = Contract(cntr_id = self.cntr_id,
                             issue_dt = self.portfolio_age,
                             duration = cntr_tariff.DUR,
                             world = self.world,
                             tariff = cntr_tariff,
-                            amount = cntr_amount
+                            amount = cntr_amount,
+                            model_score = ms,
+                            fated_score = fs,
+                            fated_result = fr,
+                            model_id = model.Model_id,
+                            number_in_queue = self.number_in_queue + i_queue,
                            )
             self.cntr_list.append(cntr)
             self.cntr_dic[self.cntr_id] = cntr
 
-    def next_month(self, issue_plan = [(Tariff,0)], log = False):
+        # Обновим последний номер очереди.
+        self.number_in_queue += i_queue
+
+    def next_month(self, issue_plan = [(Tariff,0)], log = False, dod_migration_type = None, model = None, pd_cutoff = None):
         self.portfolio_age +=1
 
         # Для проверки - выведем все закрытые на этот момент контракты
@@ -284,10 +374,10 @@ class Portfolio():
         
         # сдвинем существующий портфель, потом проведем выдачу новых         
         for cntr in self.cntr_list:
-            cntr.next_month()
+            cntr.next_month(dod_migration_type = dod_migration_type)
             
         # проведем выдачи
-        self.issue(issue_plan)
+        self.issue(issue_plan = issue_plan, pd_cutoff = pd_cutoff, model = model)
 
         # Заполним LI
         self.fix_in_dwh()
@@ -313,7 +403,12 @@ class Portfolio():
                         self.cntr_dic[cntr_id].amount,
                         self.cntr_dic[cntr_id].duration,
                         self.cntr_dic[cntr_id].tariff.IR,
-                        self.cntr_dic[cntr_id].tariff.name
+                        self.cntr_dic[cntr_id].tariff.name,
+                        self.cntr_dic[cntr_id].model_score,
+                        self.cntr_dic[cntr_id].fated_score,
+                        self.cntr_dic[cntr_id].fated_result,
+                        self.cntr_dic[cntr_id].model_id,
+                        self.cntr_dic[cntr_id].number_in_queue,
                        ]
                        for cntr_id in self.cntr_dic]
         
