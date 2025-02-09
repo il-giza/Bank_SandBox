@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn import metrics
+from scipy.optimize import root_scalar
+
 
 #============================================================================================================
 
@@ -53,6 +55,8 @@ class World():
             assert self.dod_migration[k].shape[0] == self.dod_migration[k].shape[1], 'проверка на квадратность - key=%s' % k
             assert [i.sum() for i in self.dod_migration[k]] == [1 for i in range(len(self.dod_migration[k]))], '1 in sum of row - key=%s' % k
 
+        print('Hello World!')
+
     def print_current_reality(self):
         print('Welcome to the real world')
 
@@ -76,12 +80,22 @@ class World():
 
 class Model():
     """Class Model - рисковые модели
-    
     """
-    def __init__(self, model_id=0, model_mu=0, model_sigma=1):
+
+    id = 0
+    model_dic = {}
+
+    def __init__(self, model_mu=0, model_sigma=1):
+        Model.id += 1
+        self.Model_id = Model.id
         self.Model_Mu = model_mu
         self.Model_Sigma = model_sigma
-        self.Model_id = model_id
+        Model.model_dic[Model.id] = self
+        self.log_dic = {}                 # Для неструктурированных записей
+
+    # Краткая инфа о модели
+    def info(self):
+        print(self.Model_id, self.Model_Mu, self.Model_Sigma)
 
     def Score(self, factors):
         model_diff = np.random.normal(self.Model_Mu, self.Model_Sigma, len(factors))
@@ -97,7 +111,7 @@ class Bank_DS():
     """
 
     def __init__(self):
-        self.N_grade = 16 # Кол-во рейтингов по умолчанию.
+        self.N_grade = 16   # Кол-во рейтингов по умолчанию.
         print('Hello DS!')
 
     # Функция сигмоиды
@@ -145,8 +159,41 @@ class Bank_DS():
     # Создание модели.
     # Модель создается на выданных кредитах подбором значений зашумления предопределенного скора.
     # Здесь подбираются шум таким образом, чтобы качество (gini) модели соответствовало заданому значению.
-    def create_model(self, model_num, gini = None, portfolio = None, tto_period = None):
-        return Model(model_num)
+    def create_model(self, gini = None, portfolio = None, tto_sample = None, N_range = 100):
+        if not gini:
+            return Model()
+
+        y_gini = gini
+        model_ = Model()
+        DF = tto_sample.copy()
+        dic_fun = {}
+
+        def f_gini(s):
+            s = round(s,3)
+            model_.Model_Sigma = s
+        #    model_.info()
+
+            if s == 0:
+                y = self.gini(DF, target = 'BADFLAG', score = 'FATED_SCORE')
+                dic_fun[s] = y
+                return  y - y_gini
+
+            test = []
+            for i in range(N_range):
+                DF['M1'] = model_.Score(np.array(DF['FATED_SCORE'].values))
+                test.append(self.gini(DF, target = 'BADFLAG', score = 'M1'))
+            y = np.array(test).mean()
+            dic_fun[s] = y
+
+            return y - y_gini
+
+        # Поиск корня в границах bracket.
+        sol = root_scalar(f_gini, bracket=[0, 5], xtol = 0.01, maxiter = 10)
+
+        model_.log_dic['root_scalar'] = sol
+        model_.log_dic['dic_fun'] = dic_fun
+
+        return model_
 
 #============================================================================================================
 
@@ -154,14 +201,16 @@ class DWH_DB():
     """Class DWH - база данных
     """
     def __init__(self):
-        self.LI = pd.DataFrame(columns = ['CNTR_ID',
+        self.LI = pd.DataFrame(columns = ['PORTFOLIO_ID',
+                                          'CNTR_ID',
                                           'SD',
                                           'DOD_ID',
                                           'MOB',
                                           'WRTOFF_ID',
                                           'CLOSED_ID'
                                           ])
-        self.DMContract = pd.DataFrame(columns = ['CNTR_ID',
+        self.DMContract = pd.DataFrame(columns = ['PORTFOLIO_ID',
+                                                  'CNTR_ID',
                                                   'ISSUE_DT',
                                                   'WRTOFF_DT',
                                                   'CLOSED_DT',
@@ -175,7 +224,28 @@ class DWH_DB():
                                                   'MODEL_ID',
                                                   'NUM_IN_QUEUE',
                                                  ])
+
+    def update_dwh_dic(self):
+        update_data = [[Contract.cntr_dic[cntr_id].portfolio_id,
+                        cntr_id,
+                        Contract.cntr_dic[cntr_id].issue_dt,
+                        Contract.cntr_dic[cntr_id].wrtoff_id,
+                        Contract.cntr_dic[cntr_id].closed_id,
+                        Contract.cntr_dic[cntr_id].amount,
+                        Contract.cntr_dic[cntr_id].duration,
+                        Contract.cntr_dic[cntr_id].tariff.IR,
+                        Contract.cntr_dic[cntr_id].tariff.name,
+                        Contract.cntr_dic[cntr_id].model_score,
+                        Contract.cntr_dic[cntr_id].fated_score,
+                        Contract.cntr_dic[cntr_id].fated_result,
+                        Contract.cntr_dic[cntr_id].model_id,
+                        Contract.cntr_dic[cntr_id].number_in_queue,
+                       ]
+                       for cntr_id in Contract.cntr_dic]
         
+        self.DMContract = pd.DataFrame(data=update_data,
+                                           columns=self.DMContract.columns)
+
 #============================================================================================================
 
 class Tariff():
@@ -244,10 +314,12 @@ class Contract():
                4: '91+',
                5: 'WOF'
               }
-    dod_cnt = 6 # кол-во состояний
+    dod_cnt = 6                  # кол-во состояний
     dod_states = np.eye(dod_cnt) # матрица состояний (для удобства использована единичная матрица)
+    id = 0                       # сквозной номер
+    cntr_dic  = {}               # справочник контрактов
 
-    def __init__(self, cntr_id = 0, issue_dt = 0, duration = 0,
+    def __init__(self, portfolio_id, issue_dt = 0, duration = 0,
                  world = World, tariff = Tariff, amount = 100_000,
                  model_score = None,
                  fated_score = None,
@@ -255,7 +327,9 @@ class Contract():
                  model_id = None,
                  number_in_queue = None
                 ):
-        self.cntr_id = cntr_id
+        Contract.id += 1
+        self.cntr_id = Contract.id
+        self.portfolio_id = portfolio_id
         self.dod_id = 0        # начальное состояние контракта при выдачи: DOD = 0
         self.dod_state = self.dod_states[0] # np.array([1,0,0,0,0]) 
         self.dod_migration = world.dod_migration
@@ -272,6 +346,7 @@ class Contract():
         self.model_id = model_id
         self.number_in_queue = number_in_queue
         self.p = 0
+        Contract.cntr_dic[Contract.id] = self    # сквозной справочник контрактов
 
     def next_month(self, dod_migration_type=None):
         if self.closed_id == 1:
@@ -302,15 +377,19 @@ class Portfolio():
         start_portfolio_dt - привязка портфеля к мировому времени - важно при наличии нескольких портфелей
     
     """
-    def __init__(self, N = 10, duration = 36, start_portfolio_dt = 0, world = None, dwh = None):
-        self.cntr_id = 0                                # счетчик контрактов
+
+    id = 0
+    portfolio_dic = {}
+
+    def __init__(self, N = 10, start_portfolio_dt = 0, world = None, dwh = None):
+        Portfolio.id += 1
+        self.portfolio_id = Portfolio.id                 # id портфеля
         self.start_portfolio_dt = start_portfolio_dt    # дата создания портфеля
         self.cntr_list = []                             # текущий сам портфель - список контрактов
-        self.cntr_dic  = {}                             # справочник контрактов
-        self.portfolio_age = 0                          # возрвст портфеля
+        self.portfolio_age = 0                          # возраст портфеля
         self.world = world                              # настройки внешнего мира
         self.dwh = dwh                                  # база данных
-        self.number_in_queue = 0                        # номер клиента в очереди (для определения коэф. одобрения)
+        Portfolio.portfolio_dic[Portfolio.id] = self    # сквозной справочник портфелей
 
         # проведем первую выдачу - инициализация портфеля
 #        self.issue(N, duration)
@@ -323,7 +402,8 @@ class Portfolio():
         N_flow = len(issue_plan)
         i = 0
 
-        # Есть план, впускаем по плану и часть одобряем. Потом опять впускаем и одобряем, пока не одобрим плановое число (или больше).
+        # Есть план выдач. Впускаем по плану и часть одобряем.
+        # Потом опять впускаем и одобряем, пока не одобрим плановое число (или больше).
         while len(approved_list) < N_flow:
             M_flow = N_flow * 10  # впускаем больше плана
             score_list, res_list = self.world.get_god_score(M_flow)
@@ -339,11 +419,10 @@ class Portfolio():
 #        print('----')
 #        print(score_list)
 #        print(approved_list)
-
+        i_queue_last = 0
         for (cntr_tariff, cntr_amount), (ms, fs, fr, i_queue) in zip(issue_plan,approved_list):
 #            print(cntr_tariff, cntr_amount, ms, fs, fr)
-            self.cntr_id += 1
-            cntr = Contract(cntr_id = self.cntr_id,
+            cntr = Contract(portfolio_id = self.portfolio_id,
                             issue_dt = self.portfolio_age,
                             duration = cntr_tariff.DUR,
                             world = self.world,
@@ -353,13 +432,12 @@ class Portfolio():
                             fated_score = fs,
                             fated_result = fr,
                             model_id = model.Model_id,
-                            number_in_queue = self.number_in_queue + i_queue,
+                            number_in_queue = i_queue - i_queue_last,
                            )
             self.cntr_list.append(cntr)
-            self.cntr_dic[self.cntr_id] = cntr
 
-        # Обновим последний номер очереди.
-        self.number_in_queue += i_queue
+            # Обновим последний номер очереди.
+            i_queue_last = i_queue
 
     def next_month(self, issue_plan = [(Tariff,0)], log = False, dod_migration_type = None, model = None, pd_cutoff = None):
         self.portfolio_age +=1
@@ -383,40 +461,27 @@ class Portfolio():
         self.fix_in_dwh()
 
 
-    def fix_in_dwh_old(self): # Пример медленной вставки. Так не делать.
+    def fix_in_dwh_old(self): # Пример ме дленной вставки. Так не делать.
         ix = len(self.dwh.LI.index)
         for cnt in self.cntr_list:
             self.dwh.LI.loc[ix] = [cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob]
             ix += 1
 
     def fix_in_dwh(self):
-        fix_data = [[cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id] for cnt in self.cntr_list]
+        fix_data = [[self.portfolio_id, cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id] for cnt in self.cntr_list]
         self.dwh.LI = pd.concat([self.dwh.LI,
                                  pd.DataFrame(data=fix_data,
                                               columns=self.dwh.LI.columns)
                                 ])
-    def update_dwh_dic(self):
-        update_data = [[cntr_id,
-                        self.cntr_dic[cntr_id].issue_dt,
-                        self.cntr_dic[cntr_id].wrtoff_id,
-                        self.cntr_dic[cntr_id].closed_id,
-                        self.cntr_dic[cntr_id].amount,
-                        self.cntr_dic[cntr_id].duration,
-                        self.cntr_dic[cntr_id].tariff.IR,
-                        self.cntr_dic[cntr_id].tariff.name,
-                        self.cntr_dic[cntr_id].model_score,
-                        self.cntr_dic[cntr_id].fated_score,
-                        self.cntr_dic[cntr_id].fated_result,
-                        self.cntr_dic[cntr_id].model_id,
-                        self.cntr_dic[cntr_id].number_in_queue,
-                       ]
-                       for cntr_id in self.cntr_dic]
-        
-        self.dwh.DMContract = pd.DataFrame(data=update_data,
-                                           columns=self.dwh.DMContract.columns)
+
+    # Краткая инфа о портфеле
+    def info(self):
+        print('ID = %i' % self.portfolio_id, 
+              'Возраст портеля %i мес' % self.portfolio_age,
+              'Кол-во контрактов %i' % len(self.cntr_list),
+             )
 
 
 #============================================================================================================
-
 #============================================================================================================
 
