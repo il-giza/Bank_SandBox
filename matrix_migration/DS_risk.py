@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn import metrics
-from scipy.optimize import root_scalar
+from scipy.optimize import root_scalar              # Для создания модели
+from sklearn.linear_model import LogisticRegression # Для калибровки модели
 
 
 #============================================================================================================
@@ -87,10 +88,11 @@ class Model():
 
     def __init__(self, model_mu=0, model_sigma=1):
         Model.id += 1
+        Model.model_dic[Model.id] = self
         self.Model_id = Model.id
         self.Model_Mu = model_mu
         self.Model_Sigma = model_sigma
-        Model.model_dic[Model.id] = self
+        self.Calib_koef = (0, 1)          # Калибровка по умолчанию
         self.log_dic = {}                 # Для неструктурированных записей
 
     # Краткая инфа о модели
@@ -104,22 +106,34 @@ class Model():
         # Вернем смещенный скор
         return factors + model_diff
 
+    # Применение калибровки
+    def PD(self, score):
+        A = self.Calib_koef[0]
+        B = self.Calib_koef[1]
+        return 1/(1+np.exp(-A-B*score))
+
 #============================================================================================================
 
 class Bank_DS():
-    """Class DS - Здесь будут жить фишки отдела DS
+    """Здесь будут жить фишки отдела DS
     """
 
     def __init__(self):
         self.N_grade = 16   # Кол-во рейтингов по умолчанию.
         print('Hello DS!')
 
-    # Функция сигмоиды
+
     def sigmoid(self, x):
+        '''Функция сигмоиды'''
         return 1/(1+np.exp(-x))
 
+
+    def logit(self, p):
+        '''Функция обратная сигмоиде'''
+        return np.log(p / (1 - p))
+
     # Расчет Gini 
-    def gini(self, df, target='BAD_FLAG', score='SCORE', plot=False):
+    def gini(self, df, target='BADFLAG', score='SCORE', plot=False):
         fpr, tpr, _ = metrics.roc_curve(df[target], df[score])
         gini = 2 * metrics.auc(fpr, tpr) - 1
         if plot:
@@ -135,16 +149,12 @@ class Bank_DS():
             plt.show()
         return gini
 
-    # Применение калибровки
-    def calibration(self, Score, B0, B1):
-        return 1/(1+np.exp(-B0-B1*Score))
-
     # Функция границы мастер шкалы
     def func_of_threshold(self, i):
         return 2**((-self.N_grade+i)/2)
    
     # Расчет рейтинга. Можно было бы вывести обратную функцию от границы, но, возможно, это не лучшее решение.
-    def grade(self, pd, ):
+    def grade(self, pd):
         for i in range(1,17):
             R_pd = self.func_of_threshold(i)
             if pd < R_pd:
@@ -156,22 +166,23 @@ class Bank_DS():
         for g in range(1, self.N_grade+1):
             print('%5s %0.3g'%(g, self.func_of_threshold(g)))
 
-    # Создание модели.
-    # Модель создается на выданных кредитах подбором значений зашумления предопределенного скора.
-    # Здесь подбираются шум таким образом, чтобы качество (gini) модели соответствовало заданому значению.
-    def create_model(self, gini = None, portfolio = None, tto_sample = None, N_range = 100):
+
+    def create_model(self, gini = None, tto_sample = None, N_range = 100):
+        ''' Создание модели.
+            Модель создается на выданных кредитах подбором значений зашумления предопределенного скора.
+            Здесь подбираются шум таким образом, чтобы качество модели (gini) соответствовало заданому значению.
+        '''
         if not gini:
             return Model()
 
         y_gini = gini
-        model_ = Model()
+        model = Model()
         DF = tto_sample.copy()
         dic_fun = {}
 
         def f_gini(s):
             s = round(s,3)
-            model_.Model_Sigma = s
-        #    model_.info()
+            model.Model_Sigma = s
 
             if s == 0:
                 y = self.gini(DF, target = 'BADFLAG', score = 'FATED_SCORE')
@@ -180,7 +191,7 @@ class Bank_DS():
 
             test = []
             for i in range(N_range):
-                DF['M1'] = model_.Score(np.array(DF['FATED_SCORE'].values))
+                DF['M1'] = model.Score(np.array(DF['FATED_SCORE'].values))
                 test.append(self.gini(DF, target = 'BADFLAG', score = 'M1'))
             y = np.array(test).mean()
             dic_fun[s] = y
@@ -190,10 +201,41 @@ class Bank_DS():
         # Поиск корня в границах bracket.
         sol = root_scalar(f_gini, bracket=[0, 5], xtol = 0.01, maxiter = 10)
 
-        model_.log_dic['root_scalar'] = sol
-        model_.log_dic['dic_fun'] = dic_fun
+        model.log_dic['root_scalar'] = sol
+        model.log_dic['dic_fun'] = dic_fun
 
-        return model_
+        return model
+
+
+    def calibration(self, model, sample, CT = None):
+        ''' Калибровка модели за заданном семпле
+            model  - калибруемая модель
+            sample - семпел калибровки должен содержать поля MODEL_SCORE и BADFLAG
+            CT     - центральная тенденция. Если CT заполнено, то проводится калибровка на уровень CT.
+        '''
+
+        if CT:
+            DR = sample['BADFLAG'].mean()
+            weight_defl = CT/DR
+            weight_good = (1-CT)/(1-DR)
+            sample_weight = [weight_defl if target == 1 else weight_good for target in sample['BADFLAG']]
+            model.log_dic['weight_defl'] = weight_defl
+            model.log_dic['weight_good'] = weight_good
+            model.log_dic['CT'] = CT
+            model.log_dic['DR'] = DR
+        else:
+            sample_weight = None
+
+        LR = LogisticRegression(random_state=42)
+        LR.fit(X = sample[['MODEL_SCORE']], y = sample['BADFLAG'], sample_weight = sample_weight)
+
+        model.log_dic['LR'] = LR
+        model.Calib_koef = (LR.intercept_[0], LR.coef_[0][0])
+
+        return model.Calib_koef
+
+
+
 
 #============================================================================================================
 
