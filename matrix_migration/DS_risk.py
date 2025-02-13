@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn import metrics
 from scipy.optimize import root_scalar              # Для создания модели
 from sklearn.linear_model import LogisticRegression # Для калибровки модели
-
+import matplotlib.pyplot as plt
 
 #============================================================================================================
 
@@ -51,11 +51,12 @@ class World():
                                       #[0.00, 0.00, 0.00, 0.00, 0.00, 1.00]  # TODO - добавить досрочное и частичнодочсрочное погашение кредита 
                                       ])
                              }
+        print('Проверим мир на ошибки.')
         for k in self.dod_migration:
             print('test(%s) - ' % k, [i.sum() for i in self.dod_migration[k]])
             assert self.dod_migration[k].shape[0] == self.dod_migration[k].shape[1], 'проверка на квадратность - key=%s' % k
             assert [i.sum() for i in self.dod_migration[k]] == [1 for i in range(len(self.dod_migration[k]))], '1 in sum of row - key=%s' % k
-
+        print()
         print('Hello World!')
 
     def print_current_reality(self):
@@ -97,10 +98,13 @@ class Model():
 
     # Краткая инфа о модели
     def info(self):
-        print(self.Model_id, self.Model_Mu, self.Model_Sigma)
+        print('Model_id: %s,' % self.Model_id,
+              'Mu: %s,' % self.Model_Mu,
+              'Sigma: %s,' % self.Model_Sigma,
+              'Calib koef: %g, %g' % self.Calib_koef)
 
     def Score(self, factors):
-        model_diff = np.random.normal(self.Model_Mu, self.Model_Sigma, len(factors))
+        model_diff = np.random.normal(self.Model_Mu, self.Model_Sigma, len(factors)) #.clip(-2*self.Model_Sigma, 2*self.Model_Sigma)
 #        print(model_diff)
 #        print(factors)
         # Вернем смещенный скор
@@ -108,8 +112,7 @@ class Model():
 
     # Применение калибровки
     def PD(self, score):
-        A = self.Calib_koef[0]
-        B = self.Calib_koef[1]
+        (A, B) = self.Calib_koef
         return 1/(1+np.exp(-A-B*score))
 
 #============================================================================================================
@@ -152,13 +155,27 @@ class Bank_DS():
     # Функция границы мастер шкалы
     def func_of_threshold(self, i):
         return 2**((-self.N_grade+i)/2)
-   
-    # Расчет рейтинга. Можно было бы вывести обратную функцию от границы, но, возможно, это не лучшее решение.
-    def grade(self, pd):
+
+
+    def grade(self, pd: float) -> int:
+        '''Расчет рейтинга. Можно было бы вывести обратную функцию от границы, но, возможно, это не лучшее решение.'''
         for i in range(1,17):
             R_pd = self.func_of_threshold(i)
             if pd < R_pd:
                 return i
+
+
+    def grade(self, sample: pd.DataFrame, col_pd = 'PD', col_grade = 'GRADE'):
+        '''Расчет рейтинга для DataFrame.'''
+
+        sample[col_grade] = pd.NA
+
+        for i in range(1,17):
+            R_pd = self.func_of_threshold(i)
+            ix_lt = sample[col_pd] < R_pd
+            ix_na = sample[col_grade].isna()
+            sample.loc[ix_lt & ix_na, col_grade] = i
+
 
     # Распечатать границы мастер шкалы
     def print_master_scale(self):
@@ -167,21 +184,52 @@ class Bank_DS():
             print('%5s %0.3g'%(g, self.func_of_threshold(g)))
 
 
+    def weighted_median(DF, col_values, col_weight, col_group = None):
+        ''' Вычисление медианы на выборке значений, которые имеют вес.
+            col_values - значения, по которым вычисляется медиана
+            col_weight - вес значения col_values
+            col_group  - поле группировки, необязательное условие
+        '''
+
+        # Если поля групировки нет, то создадим фиктивное поле.
+        if not col_group:
+            col_group = '-'
+            T = DF[[col_values, col_weight]].copy()
+            T[col_group] = col_group
+        else:
+            T = DF[[col_values, col_weight, col_group]].copy()
+
+        T.sort_values([col_group, col_values], inplace = True)
+        T['cumsum'] = T.groupby(col_group)[col_weight].transform('cumsum')
+        T['sum']    = T.groupby(col_group)[col_weight].transform('sum')
+        ix = T['cumsum'] >= T['sum']/2.0
+        T['vm'] = T[ix].groupby(col_group)[col_values].transform('min')
+
+        return T.groupby(col_group)[['vm']].min().rename(columns = {'vm': 'midian'})
+
+
+    def calibration_test(self, model, sample):
+        '''Создание отчета по калибровке'''
+        T = sample.copy()
+
+
     def create_model(self, gini = None, tto_sample = None, N_range = 100):
         ''' Создание модели.
             Модель создается на выданных кредитах подбором значений зашумления предопределенного скора.
             Здесь подбираются шум таким образом, чтобы качество модели (gini) соответствовало заданому значению.
         '''
+
+        model = Model()
+
         if not gini:
-            return Model()
+            return model
 
         y_gini = gini
-        model = Model()
-        DF = tto_sample.copy()
+        DF = tto_sample[['BADFLAG','FATED_SCORE']].copy()
         dic_fun = {}
 
         def f_gini(s):
-            s = round(s,3)
+            #s = round(s,3)
             model.Model_Sigma = s
 
             if s == 0:
@@ -191,8 +239,8 @@ class Bank_DS():
 
             test = []
             for i in range(N_range):
-                DF['M1'] = model.Score(np.array(DF['FATED_SCORE'].values))
-                test.append(self.gini(DF, target = 'BADFLAG', score = 'M1'))
+                DF['MODEL_SCORE'] = model.Score(np.array(DF['FATED_SCORE'].values))
+                test.append(self.gini(DF, target = 'BADFLAG', score = 'MODEL_SCORE'))
             y = np.array(test).mean()
             dic_fun[s] = y
 
@@ -200,6 +248,8 @@ class Bank_DS():
 
         # Поиск корня в границах bracket.
         sol = root_scalar(f_gini, bracket=[0, 5], xtol = 0.01, maxiter = 10)
+
+        model.Model_Sigma = round(sol.root, 3)
 
         model.log_dic['root_scalar'] = sol
         model.log_dic['dic_fun'] = dic_fun
@@ -260,6 +310,7 @@ class DWH_DB():
                                                   'DURATION',
                                                   'IR',
                                                   'TARIFF',
+                                                  'MODEL_PD',
                                                   'MODEL_SCORE',
                                                   'FATED_SCORE',
                                                   'FATED_RESULT',
@@ -277,6 +328,7 @@ class DWH_DB():
                         Contract.cntr_dic[cntr_id].duration,
                         Contract.cntr_dic[cntr_id].tariff.IR,
                         Contract.cntr_dic[cntr_id].tariff.name,
+                        Contract.cntr_dic[cntr_id].model_pd,
                         Contract.cntr_dic[cntr_id].model_score,
                         Contract.cntr_dic[cntr_id].fated_score,
                         Contract.cntr_dic[cntr_id].fated_result,
@@ -363,6 +415,7 @@ class Contract():
 
     def __init__(self, portfolio_id, issue_dt = 0, duration = 0,
                  world = World, tariff = Tariff, amount = 100_000,
+                 model_pd = None,
                  model_score = None,
                  fated_score = None,
                  fated_result = None,
@@ -382,6 +435,7 @@ class Contract():
         self.wrtoff_id = 0       # 0 - контратк несписан, 1 - списан
         self.amount = amount
         self.tariff = tariff
+        self.model_pd = model_pd
         self.model_score = model_score
         self.fated_score = fated_score
         self.fated_result = fated_result
@@ -439,7 +493,7 @@ class Portfolio():
 #        self.fix_in_dwh()
 
     def issue(self, issue_plan = [(Tariff,0)], pd_cutoff = 0.1, model = None):
-        score_cutoff = np.log(pd_cutoff / (1 - pd_cutoff))
+#        score_cutoff = np.log(pd_cutoff / (1 - pd_cutoff))
         approved_list = []
         N_flow = len(issue_plan)
         i = 0
@@ -450,10 +504,13 @@ class Portfolio():
             M_flow = N_flow * 10  # впускаем больше плана
             score_list, res_list = self.world.get_god_score(M_flow)
             model_score_list = model.Score(score_list)
-            approved_list.extend([(ms, fs, fr, i) for ms, fs, fr, i in zip(model_score_list,
-                                                                           score_list,res_list,
-                                                                           range(i*M_flow,(i+1)*M_flow)
-                                                                          ) if ms < score_cutoff])
+            model_pd_list = model.PD(model_score_list)
+            approved_list.extend([(ms, pd, fs, fr, i) for ms, pd, fs, fr, i in zip(model_score_list,
+                                                                                   model_pd_list,
+                                                                                   score_list,
+                                                                                   res_list,
+                                                                                   range(i*M_flow,(i+1)*M_flow)
+                                                                                  ) if pd < pd_cutoff])
             i+=1
 #            print('--')
 #            print(len(approved_list))
@@ -462,7 +519,7 @@ class Portfolio():
 #        print(score_list)
 #        print(approved_list)
         i_queue_last = 0
-        for (cntr_tariff, cntr_amount), (ms, fs, fr, i_queue) in zip(issue_plan,approved_list):
+        for (cntr_tariff, cntr_amount), (ms, pd, fs, fr, i_queue) in zip(issue_plan,approved_list):
 #            print(cntr_tariff, cntr_amount, ms, fs, fr)
             cntr = Contract(portfolio_id = self.portfolio_id,
                             issue_dt = self.portfolio_age,
@@ -470,6 +527,7 @@ class Portfolio():
                             world = self.world,
                             tariff = cntr_tariff,
                             amount = cntr_amount,
+                            model_pd = pd,
                             model_score = ms,
                             fated_score = fs,
                             fated_result = fr,
@@ -510,7 +568,8 @@ class Portfolio():
             ix += 1
 
     def fix_in_dwh(self):
-        fix_data = [[self.portfolio_id, cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id] for cnt in self.cntr_list]
+        fix_data = [[self.portfolio_id, cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id
+                    ] for cnt in self.cntr_list]
         self.dwh.LI = pd.concat([self.dwh.LI,
                                  pd.DataFrame(data=fix_data,
                                               columns=self.dwh.LI.columns)
