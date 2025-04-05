@@ -117,6 +117,19 @@ class Model():
 
 #============================================================================================================
 
+class Bank_finances():
+    """Здесь будут жить фишки финансовой части банка
+    """
+
+    def __init__(self, capital = 100_000_000):
+        self.capital = capital
+        self.account_01 = capital * 0.8
+        self.account_02 = capital * 0.2
+        self.account_03 = 0
+        print('Hello finances!')
+
+#============================================================================================================
+
 class Bank_DS():
     """Здесь будут жить фишки отдела DS
     """
@@ -159,7 +172,7 @@ class Bank_DS():
 
     def grade(self, pd: float) -> int:
         '''Расчет рейтинга. Можно было бы вывести обратную функцию от границы, но, возможно, это не лучшее решение.'''
-        for i in range(1,17):
+        for i in range(1, self.N_grade+1):
             R_pd = self.func_of_threshold(i)
             if pd < R_pd:
                 return i
@@ -170,7 +183,7 @@ class Bank_DS():
 
         sample[col_grade] = pd.NA
 
-        for i in range(1,17):
+        for i in range(1, self.N_grade + 1):
             R_pd = self.func_of_threshold(i)
             ix_lt = sample[col_pd] < R_pd
             ix_na = sample[col_grade].isna()
@@ -293,13 +306,23 @@ class DWH_DB():
     """Class DWH - база данных
     """
     def __init__(self):
-        self.LI = pd.DataFrame(columns = ['PORTFOLIO_ID',
-                                          'CNTR_ID',
-                                          'SD',
-                                          'DOD_ID',
-                                          'MOB',
-                                          'WRTOFF_ID',
-                                          'CLOSED_ID'
+        self.LI = pd.DataFrame(columns = ['PORTFOLIO_ID',  # Идентификатор портфеля
+                                          'CNTR_ID',       # Идентификатор контракта
+                                          'SD',            # Отчетная дата на конец месяца
+                                          'DOD_ID',        # Идентификатор состояния дней просрочки (равен кол-ву просроч платежей, кроме WOF)
+                                          'MOB',           # MOB
+                                          'WRTOFF_ID',     # Идентификатор списания
+                                          'CLOSED_ID',     # Идентификатор закрытия
+                                          'AMOUNT',        # Основной долг
+                                          'AMOUNTOVERDUE', # Просроченный основной долг на конец месяца после учета оплаты
+                                          'PERCENT',       # Проценты на конец месяца после учета оплаты
+                                          'PAYMENT',       # Платеж за месяц
+                                          'PAYMENT_CUM',   # Кумсумма платежей
+                                          'PAYMENT_CNT',   # Номер платежа или кол-во платежей
+                                          'WOF_AMOUNT',    # Списанный основной долг
+                                          'WOF_PERCENT',   # Списанные проценты
+                                          'PAYMENT_DISC_CUM',   # Кумсумма дисконтированных платежей
+                                          'PAYMENT_DISC',  # Дисконтированный платеж
                                           ])
         self.DMContract = pd.DataFrame(columns = ['PORTFOLIO_ID',
                                                   'CNTR_ID',
@@ -316,14 +339,19 @@ class DWH_DB():
                                                   'FATED_RESULT',
                                                   'MODEL_ID',
                                                   'NUM_IN_QUEUE',
+                                                  'PAYMENT_CUM',   # Кумсумма платежей
+                                                  'PAYMENT_DISC_CUM',
+                                                  'PAYMENT_DISC_TW_CUM',
+                                                  'WOF_AMOUNT',    # Списанный основной долг
+                                                  'WOF_PERCENT',   # Списанные проценты
                                                  ])
 
     def update_dwh_dic(self):
         update_data = [[Contract.cntr_dic[cntr_id].portfolio_id,
                         cntr_id,
                         Contract.cntr_dic[cntr_id].issue_dt,
-                        Contract.cntr_dic[cntr_id].wrtoff_id,
-                        Contract.cntr_dic[cntr_id].closed_id,
+                        Contract.cntr_dic[cntr_id].wrtoff_dt,
+                        Contract.cntr_dic[cntr_id].closed_dt,
                         Contract.cntr_dic[cntr_id].amount,
                         Contract.cntr_dic[cntr_id].duration,
                         Contract.cntr_dic[cntr_id].tariff.IR,
@@ -334,6 +362,11 @@ class DWH_DB():
                         Contract.cntr_dic[cntr_id].fated_result,
                         Contract.cntr_dic[cntr_id].model_id,
                         Contract.cntr_dic[cntr_id].number_in_queue,
+                        Contract.cntr_dic[cntr_id].payment_cum,
+                        Contract.cntr_dic[cntr_id].payment_disc_cum,
+                        Contract.cntr_dic[cntr_id].payment_disc_tw_cum,
+                        Contract.cntr_dic[cntr_id].wof_amount,
+                        Contract.cntr_dic[cntr_id].wof_percent,
                        ]
                        for cntr_id in Contract.cntr_dic]
         
@@ -364,6 +397,7 @@ class Tariff():
             K = i*d/(d-1)  # Коэффициент аннуитета
             PP['K'] = K    # Коэффициент аннуитета
             PP['MD'] =  1/i- n/(d-1)/(1+i) # Модифицированная дюрация
+            PP['IR_month'] = i # проценты в месяц
             # опишем график платежей: 
             PP[1] = np.array([1+i, # Долг на момент оплаты
                               K,   # платеж
@@ -395,6 +429,21 @@ class Tariff():
 
 #============================================================================================================
 
+class Application():
+    """Class Application
+    """
+
+    id = 0                       # сквозной номер
+    appl_dic  = {}               # справочник заявок
+
+    def __init__(self):
+        Application.id += 1
+        Application.appl_dic[Application.id] = self # сквозной справочник заявок
+        self.appl_id = Application.id
+        self.status = 0
+    
+#============================================================================================================
+
 class Contract():
     """Class Contract
        issue_dt - issue of contract
@@ -409,6 +458,8 @@ class Contract():
                5: 'WOF'
               }
     dod_cnt = 6                  # кол-во состояний
+    dod_wof = 5                  # состояние списания
+    dod_max = 4                  # максимальное состояние перед списанием
     dod_states = np.eye(dod_cnt) # матрица состояний (для удобства использована единичная матрица)
     id = 0                       # сквозной номер
     cntr_dic  = {}               # справочник контрактов
@@ -423,17 +474,32 @@ class Contract():
                  number_in_queue = None
                 ):
         Contract.id += 1
+        Contract.cntr_dic[Contract.id] = self    # сквозной справочник контрактов
         self.cntr_id = Contract.id
         self.portfolio_id = portfolio_id
         self.dod_id = 0        # начальное состояние контракта при выдачи: DOD = 0
-        self.dod_state = self.dod_states[0] # np.array([1,0,0,0,0]) 
+        self.dod_new_id = 0    # начальное состояние контракта при выдачи: DOD = 0 (вспомогательное переменная)
+        self.dod_state = self.dod_states[self.dod_id] # np.array([1,0,0,0,0]) 
         self.dod_migration = world.dod_migration
-        self.issue_dt = issue_dt
+        self.issue_dt = issue_dt # Дата выдачи
+        self.wrtoff_dt = 0       # Дата списания 
+        self.closed_dt = 0       # Дата закрытия
         self.mob = 0
         self.duration = duration
         self.closed_id = 0       # 0 - контратк открыт, 1 - закрыт
         self.wrtoff_id = 0       # 0 - контратк несписан, 1 - списан
-        self.amount = amount
+        self.amount = amount       # выдача
+        self.amount_due = amount   # текущее непросроченное знчение долга
+        self.amount_overdue = 0    # текущее просроченное знчение долга
+        self.percent = 0           # текущие проценты за кредит (просроченные и непросроченные)
+        self.payment = 0           # последняя оплата за месяц
+        self.payment_cum = 0       # кумсумма последних оплат
+        self.payment_cnt = 0       # кол-во совершенных оплат
+        self.payment_disc = 0      # дисконтированный платеж
+        self.payment_disc_cum = 0  # кумсумма дисконтированных платежей
+        self.payment_disc_tw_cum = 0 # кумсумма дисконтированных взвешенных по mob платежей
+        self.wof_amount  = 0       # списанный основной долг
+        self.wof_percent = 0       # списанные проценты
         self.tariff = tariff
         self.model_pd = model_pd
         self.model_score = model_score
@@ -442,29 +508,119 @@ class Contract():
         self.model_id = model_id
         self.number_in_queue = number_in_queue
         self.p = 0
-        Contract.cntr_dic[Contract.id] = self    # сквозной справочник контрактов
+        # self.arr_amount_overdue         = np.array([0]) # массив просрочек основного долга FIFO
+        # self.arr_percent                = np.array([0]) # массив просрочек процентов на основной долга FIFO
+        # self.arr_percent_amount_overdue = np.array([0]) # массив просрочек процентов на просроченный основного долга FIFO
+        # self.arr_percent_percent        = np.array([0]) # массив просрочек процентов на просроченные проценты FIFO
+        self.Ao = np.array(0) # массив просрочек основного долга FIFO
+        self.Po = np.array(0) # массив просрочек процентов на основной долга FIFO
+        self.Ar = np.array(0) # массив просрочек процентов на просроченный основного долга FIFO
+        self.Pr = np.array(0) # массив просрочек процентов на просроченные проценты FIFO
+        self.err = 0   # внутренняя ошибка договора (для отладки кода)
+        self.log = ''  # лог контракта для записей предупреждений и ошибок.
+
 
     def next_month(self, dod_migration_type=None):
         if self.closed_id == 1:
             return None
 
+        self.mob = self.mob + 1
+
+        if self.wrtoff_id == 1 and self.mob >= self.duration + 6: # закрытие списанного контракта
+            self.closed_id = 1
+            self.closed_dt = self.issue_dt + self.mob
+
+        if self.wrtoff_id == 1:
+            return None
+
+        if self.dod_id == Contract.dod_wof: # Если было списание, то ничего не меняем, ждем закрытия контракта. TODO: Возможно применение LGD
+            return None
+
         if not dod_migration_type:
             dod_migration_type = self.fated_result
 
-        self.mob = self.mob + 1
         self.p = self.dod_migration[dod_migration_type][self.dod_id]   # array of probabilities
-        self.dod_id = np.random.choice(self.dod_cnt, 1, p = self.p)[0]     # new state
-        self.dod_state = self.dod_states[self.dod_id]
+        self.dod_new_id = np.random.choice(self.dod_cnt, 1, p = self.p)[0]     # new state
+        self.dod_state = self.dod_states[self.dod_new_id]
 
-        if self.dod_id == 0 and self.mob >= self.duration: # погашение либо выздоровление с возвращением в график
-            self.closed_id = 1
-        
-        if self.wrtoff_id == 0 and self.dod_id == 5 and self.mob >= self.duration + 12: # списание
-            self.wrtoff_id = 1
+        if self.mob <= self.duration:
+            Ao_append = self.tariff.PlanParam[self.mob][2] * self.amount # Ожидаемая оплата по долгу
+            Po_append = self.tariff.PlanParam[self.mob][3] * self.amount # Ожидаемая оплата по процентам
+            self.amount_due  -= Ao_append # уменьшение непросроченного долга по графику                
+        else:
+            Ao_append, Po_append = 0, 0
 
-        if self.wrtoff_id == 1 and self.mob >= self.duration + 24: # закрытие списанного контракта
-            self.closed_id = 1
+        # Было без просрочки, стало без просрочки
+        if self.dod_id == 0 and self.dod_new_id == 0:
+            self.payment_cnt += 1
+            self.payment = self.tariff.PlanParam[self.mob][1] * self.amount # Платеж по графику
+            self.payment_cum += self.payment
             
+        # Была или наступила просрочка или произошло списание
+        else:
+            # заполним вспомогательные массивы
+            r = self.tariff.PlanParam['IR_month']
+            self.Ao = np.append(self.Ao, Ao_append) # добавим в массив просрочку по долгу
+            self.Po = np.append(self.Po, Po_append) # добавим в массив просрочку по процентам
+            
+            self.Ar = np.append(self.Ar*(1+r), self.Ao[:-1].sum()*r) # добавим в массив сумму по прошлым просрочкам по долгу
+            self.Pr = np.append(self.Pr*(1+r), self.Po[:-1].sum()*r) # добавим в массив сумму по прошлым просрочкам по процентам
+#            self.Ar = self.Ar * self.tariff.PlanParam['IR_month'] # учтем проценты на просроченный долг
+#            self.Pr = self.Pr * self.tariff.PlanParam['IR_month'] # учтем проценты на просроченные проценты
+
+            # Просрочка выросла, но не произошло списания. Либо просрочка остается равной максимальной просрочке перед списанием.
+            if (self.dod_new_id > self.dod_id) or (self.dod_new_id == Contract.dod_max):
+                self.payment = 0
+                self.amount_overdue = self.Ao.sum()
+                self.percent = self.Po.sum() + self.Ar.sum() + self.Pr.sum()
+        
+            # Просрочка не выросла и стала меньше максимальной перед списанием. (например, 4->3 , 4->2 , 3->3, 2->0)
+            # Это значит оплачены все проценты, и погашен минимум один платеж основного долга
+            elif (self.dod_new_id <= self.dod_id and self.dod_new_id < Contract.dod_max):
+                Ao_id = self.Ao.shape[0] - self.dod_new_id # Определим кол-во оплаченных платежей
+                self.payment = self.Po.sum() + self.Ar.sum() + self.Pr.sum() + self.Ao[:Ao_id].sum() # Платежи по графику и доплата за просрочку
+                self.payment_cnt += 1
+                self.payment_cum += self.payment
+                self.Ao = self.Ao[Ao_id:]     # Оставшиеся платежи, если не произошло выхода в график
+                self.Po = np.array(0)
+                self.Ar = np.array(0)
+                self.Pr = np.array(0)
+                self.amount_overdue = self.Ao.sum()
+                self.percent = 0
+            else:
+                self.err = 1
+                print('Error -', self.cntr_id)                
+                assert self.err == 1, 'Возник неописуемый случай'
+
+        # Если произошло списание
+        if ((self.dod_new_id == Contract.dod_wof) or                                   # списание по матрице состояний
+            (self.dod_new_id == Contract.dod_max and self.mob >= self.duration + 12)): # списание по времени
+            self.wrtoff_id = 1
+            self.wrtoff_dt = self.issue_dt + self.mob
+            self.wof_amount = self.amount_due + self.amount_overdue      # Списываем основной долг и просроченный основной долг
+            self.wof_percent = self.percent                              # Списываем проценты
+            self.amount_due, self.amount_overdue, self.percent = 0, 0, 0 # Обнуляем балансовую часть
+            if self.dod_new_id == Contract.dod_wof:
+                self.log += 'Списание по матрице состояний\n'
+            elif self.dod_new_id == Contract.dod_max:
+                self.log += 'Списание по времени\n'
+
+        # погашение контракта
+        elif self.dod_new_id < Contract.dod_wof and (self.amount_due + self.amount_overdue + self.percent) < 0.001:
+            self.closed_id = 1
+            self.closed_dt = self.issue_dt + self.mob
+            # Погашение могло произойти с понижением просрочки не до нуля. Обнуляем принудительно.
+            # Случай когда происходит уменьшение просрочки например с 3 -> 1, но этого уже достаточно, чтобы погасить долг
+            if self.dod_new_id > 0:
+                self.dod_new_id = 0
+                self.log += 'Обнуление просрочки\n'
+        
+        self.dod_id = self.dod_new_id
+        self.payment_disc = self.payment/(1+self.tariff.PlanParam['IR_month'])**self.mob
+        self.payment_disc_cum += self.payment_disc
+        self.payment_disc_tw_cum += self.payment_disc*self.mob
+
+
 #============================================================================================================
 
 class Portfolio():
@@ -568,7 +724,10 @@ class Portfolio():
             ix += 1
 
     def fix_in_dwh(self):
-        fix_data = [[self.portfolio_id, cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id
+        fix_data = [[self.portfolio_id, cnt.cntr_id, self.portfolio_age, cnt.dod_id, cnt.mob, cnt.wrtoff_id, cnt.closed_id,
+                     cnt.amount_due, cnt.amount_overdue, cnt.percent, cnt.payment, cnt.payment_cum, cnt.payment_cnt,
+                     cnt.wof_amount, cnt.wof_percent,
+                     cnt.payment_disc_cum, cnt.payment_disc
                     ] for cnt in self.cntr_list]
         self.dwh.LI = pd.concat([self.dwh.LI,
                                  pd.DataFrame(data=fix_data,
